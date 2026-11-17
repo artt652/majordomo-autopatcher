@@ -1,0 +1,418 @@
+<!--#
+ @version 1.0
+#-->
+[#if ACTION="admin"#]
+<style>
+    .ap-editor { font-family: Consolas, Menlo, monospace; font-size: 12px; white-space: pre; overflow: auto;
+                 resize: vertical; min-height: 100px; word-wrap: normal; }
+    textarea.ap-editor { height: 160px; }
+    .ap-editor.ap-expanded { height: 70vh !important; }
+    .ap-spin { animation: ap-spin 1s linear infinite; }
+    @keyframes ap-spin { to { transform: rotate(360deg); } }
+</style>
+<script>
+    // compact by default; drag the corner (desktop) or use the button (phones have no resize grip)
+    $(document).off('click.apsize').on('click.apsize', '.ap-size', function (e) {
+        e.preventDefault();
+        var el = $('#' + $(this).data('target'));
+        el.css('height', '').toggleClass('ap-expanded');
+    });
+</script>
+
+[#if OK_MSG!=""#]<div class="alert alert-success">[#OK_MSG#]</div>[#endif OK_MSG#]
+[#if ERR_MSG!=""#]<div class="alert alert-danger">[#ERR_MSG#]</div>[#endif ERR_MSG#]
+
+[#if VIEW_MODE="edit_patch"#]
+<!-- ============ add / edit patch ============ -->
+[#if ID=""#]<div class="alert alert-warning"><#LANG_AUTOPATCHER_RISK_WARNING#> <a href="?view_mode=help"><#LANG_AUTOPATCHER_MORE#></a></div>[#endif ID#]
+[#if EXISTING_ID!=""#]<p><a href="?view_mode=view_patch&id=[#EXISTING_ID#]" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-eye-open"></i> <#LANG_AUTOPATCHER_OPEN_EXISTING#></a></p>[#endif EXISTING_ID#]
+<form action="?" method="post" enctype="multipart/form-data" class="form-horizontal" onsubmit="var b=this.querySelector('button[type=submit]'); if (b.disabled) return false; b.disabled=true; return true;">
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_FILE#>:</label>
+        <div class="col-md-10">
+            [#if ID!=""#]
+            <p class="form-control-static"><b>[#FILENAME#]</b></p>
+            [#else#]
+            <input type="text" name="filename" class="form-control" value="[#FILENAME#]" placeholder="<#LANG_AUTOPATCHER_NAME_AUTO#>">
+            <p class="help-block"><#LANG_AUTOPATCHER_PATCH_FILENAME_HELP#></p>
+            [#endif ID#]
+        </div>
+    </div>
+    [#if ID=""#]
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_SOURCE_URL#>:</label>
+        <div class="col-md-10">
+            <input type="url" name="source_url" class="form-control" value="[#SOURCE_URL#]" placeholder="https://github.com/sergejey/majordomo/pull/1234">
+            <p class="help-block"><#LANG_AUTOPATCHER_SOURCE_URL_HELP#> <a href="?view_mode=help&section=github"><#LANG_AUTOPATCHER_MORE#></a></p>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_ROOT#>:</label>
+        <div class="col-md-10">
+            <input type="text" name="root" class="form-control" value="[#ROOT#]" placeholder="modules/tinyfm">
+            <p class="help-block"><#LANG_AUTOPATCHER_ROOT_HELP#></p>
+        </div>
+    </div>
+    [#if IMPORTED="1"#]
+    <div class="form-group">
+        <div class="col-md-offset-2 col-md-10">
+            <div class="alert alert-info" style="margin-bottom: 0;">
+                <b><#LANG_AUTOPATCHER_IMPORT_REVIEW#></b>
+                [#if IMPORT_STATE!=""#]<br>PR: <span class="label label-[#IMPORT_STATE_CLASS#]">[#IMPORT_STATE#]</span>[#endif IMPORT_STATE#]
+                [#if IMPORT_MERGED="1"#] <small><#LANG_AUTOPATCHER_PR_MERGED_HELP#></small>[#endif IMPORT_MERGED#]
+                [#if IMPORT_EXCLUDED_COUNT!="0"#]<br><#LANG_AUTOPATCHER_IMPORT_EXCLUDED#>:
+                <ul style="margin-bottom: 0;">[#begin IMPORT_EXCLUDED#]<li><code>[#PATH#]</code> — [#REASON#]</li>[#end IMPORT_EXCLUDED#]</ul>[#endif IMPORT_EXCLUDED_COUNT#]
+            </div>
+        </div>
+    </div>
+    [#endif IMPORTED#]
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_PATCH_FILE#>:</label>
+        <div class="col-md-10"><input type="file" name="patch_file"></div>
+    </div>
+    [#endif ID#]
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_PATCH_TEXT#>:</label>
+        <div class="col-md-10">
+            <textarea name="content" id="ap_content" rows="8" class="form-control ap-editor" spellcheck="false" autocapitalize="off" autocomplete="off">[#CONTENT#]</textarea>
+            <a href="#" class="btn btn-default btn-xs ap-size" data-target="ap_content" style="margin-top: 4px;"><i class="glyphicon glyphicon-resize-vertical"></i> <#LANG_AUTOPATCHER_EXPAND#></a>
+            <p class="help-block"><#LANG_AUTOPATCHER_FORMAT_HELP#> <a href="?view_mode=help&section=formats"><#LANG_AUTOPATCHER_MORE#></a></p>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="col-md-offset-2 col-md-10">
+            <button type="submit" class="btn btn-primary"><#LANG_SUBMIT#></button>
+            <a href="?[#if ID!=""#]view_mode=view_patch&id=[#ID#][#endif ID#]" class="btn btn-default"><#LANG_CANCEL#></a>
+        </div>
+    </div>
+    <input type="hidden" name="id" value="[#ID#]">
+    <input type="hidden" name="view_mode" value="edit_patch">
+    <input type="hidden" name="mode" value="update">
+</form>
+[#endif VIEW_MODE#]
+
+[#if VIEW_MODE="view_patch"#]
+<!-- ============ patch details ============ -->
+<p><a href="?" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-chevron-left"></i> <#LANG_BACK#></a></p>
+<h4>[#TITLE#] <small>[#FILENAME#]</small> <span class="label label-[#STATUS_CLASS#]">[#STATUS_TITLE#]</span></h4>
+[#if SOURCE!=""#]<p><small><#LANG_AUTOPATCHER_SOURCE#>: <a href="[#SOURCE#]" target="_blank" rel="noopener">[#SOURCE#]</a></small>
+    <a href="?view_mode=refresh_patch&id=[#ID#]" class="btn btn-default btn-xs"><i class="glyphicon glyphicon-cloud-download"></i> <#LANG_AUTOPATCHER_REFRESH_SOURCE#></a></p>[#endif SOURCE#]
+[#if EXCLUDED_LIST!=""#]<p><small class="text-muted"><#LANG_AUTOPATCHER_IMPORT_EXCLUDED#>: [#EXCLUDED_LIST#]</small></p>[#endif EXCLUDED_LIST#]
+<form action="?" method="post" class="form-inline" style="margin-bottom: 10px;">
+    <label><#LANG_AUTOPATCHER_ORDER#>:
+        <input type="number" name="number" min="0" max="9999" value="[#NUMBER#]" class="form-control input-sm" style="width: 90px; display: inline-block;">
+    </label>
+    <button type="submit" class="btn btn-default btn-sm"><#LANG_SUBMIT#></button>
+    <small class="text-muted"><#LANG_AUTOPATCHER_POSITION#> [#POSITION#] / [#TOTAL#]. <#LANG_AUTOPATCHER_ORDER_HELP#></small>
+    <input type="hidden" name="view_mode" value="patch_number">
+    <input type="hidden" name="id" value="[#ID#]">
+</form>
+[#if STATUS_CLASS="danger"#]<div class="alert alert-warning"><#LANG_AUTOPATCHER_CONFLICT_HELP#> <a href="?view_mode=help&section=states"><#LANG_AUTOPATCHER_MORE#></a></div>[#endif STATUS_CLASS#]
+[#if EVAL_MESSAGE!=""#]<div class="alert alert-danger">[#EVAL_MESSAGE#]</div>[#endif EVAL_MESSAGE#]
+[#if CONFIRM_REVERT="1"#]
+<div class="alert alert-warning">
+    <p><#LANG_AUTOPATCHER_REVERT_AFFECTS#>: <b>[#AFFECTED#]</b></p>
+    <p><#LANG_AUTOPATCHER_REVERT_AFFECTS_HELP#></p>
+    <p>
+        [#if FOR_DELETE="1"#]
+        <a href="?view_mode=delete_patch&id=[#ID#]&how=revert&force=1" class="btn btn-danger btn-sm"><i class="glyphicon glyphicon-remove"></i> <#LANG_AUTOPATCHER_DELETE_WITH_THEM#></a>
+        [#else#]
+        <a href="?view_mode=revert_patch&id=[#ID#]&force=1" class="btn btn-warning btn-sm"><i class="glyphicon glyphicon-repeat"></i> <#LANG_AUTOPATCHER_REVERT_ANYWAY#></a>
+        [#endif FOR_DELETE#]
+        <a href="?view_mode=view_patch&id=[#ID#]" class="btn btn-default btn-sm"><#LANG_CANCEL#></a>
+    </p>
+</div>
+[#endif CONFIRM_REVERT#]
+[#if CONFIRM_DELETE="1"#]
+<div class="alert alert-warning">
+    <p><b><#LANG_AUTOPATCHER_DELETE_ASK#></b></p>
+    <p><#LANG_AUTOPATCHER_DELETE_ASK_HELP#></p>
+    <p>
+        <a href="?view_mode=delete_patch&id=[#ID#]&how=revert" class="btn btn-danger btn-sm"><i class="glyphicon glyphicon-repeat"></i> <#LANG_AUTOPATCHER_DELETE_REVERT#></a>
+        <a href="?view_mode=delete_patch&id=[#ID#]&how=keep" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-remove"></i> <#LANG_AUTOPATCHER_DELETE_KEEP#></a>
+        <a href="?view_mode=view_patch&id=[#ID#]" class="btn btn-default btn-sm"><#LANG_CANCEL#></a>
+    </p>
+</div>
+[#endif CONFIRM_DELETE#]
+<table class="table table-condensed table-striped">
+    <thead><tr><th><#LANG_AUTOPATCHER_FILES#></th><th><#LANG_AUTOPATCHER_STATUS#></th><th></th></tr></thead>
+    <tbody>
+    [#begin FILES#]
+    <tr>
+        <td><code>[#PATH#]</code></td>
+        <td><span class="label label-[#STATUS_CLASS#]">[#STATUS_TITLE#]</span></td>
+        <td><small>[#DETAILS#]</small></td>
+    </tr>
+    [#end FILES#]
+    </tbody>
+</table>
+<p>
+    <a href="?view_mode=check_patch&id=[#ID#]" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-refresh"></i> <#LANG_AUTOPATCHER_CHECK#></a>
+    <a href="?view_mode=apply_patch&id=[#ID#]" class="btn btn-success btn-sm"><i class="glyphicon glyphicon-ok"></i> <#LANG_AUTOPATCHER_APPLY#></a>
+    <a href="?view_mode=revert_patch&id=[#ID#]" class="btn btn-warning btn-sm" onclick="return confirm('<#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-repeat"></i> <#LANG_AUTOPATCHER_REVERT#></a>
+    <a href="?view_mode=edit_patch&id=[#ID#]" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-pencil"></i> <#LANG_EDIT#></a>
+    <a href="?view_mode=delete_patch&id=[#ID#]" class="btn btn-danger btn-sm" onclick="return confirm('<#LANG_AUTOPATCHER_DELETE_HELP#> <#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-remove"></i> <#LANG_DELETE#></a>
+</p>
+<pre id="ap_view" class="ap-editor" style="height: 180px;">[#CONTENT#]</pre>
+<a href="#" class="btn btn-default btn-xs ap-size" data-target="ap_view"><i class="glyphicon glyphicon-resize-vertical"></i> <#LANG_AUTOPATCHER_EXPAND#></a>
+[#endif VIEW_MODE#]
+
+[#if VIEW_MODE="help"#]
+<!-- ============ help ============ -->
+<p><a href="?" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-chevron-left"></i> <#LANG_BACK#></a></p>
+<div id="ap_help">[#HELP#]</div>
+<p><a href="?" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-chevron-left"></i> <#LANG_BACK#></a></p>
+<script>
+    (function () {
+        function fixedTop() {
+            // height of bars fixed at the top (the panel navbar becomes fixed only after scrolling)
+            var h = 0;
+            $('.navbar, header, nav').each(function () {
+                var cs = getComputedStyle(this), r = this.getBoundingClientRect();
+                if ((cs.position === 'fixed' || cs.position === 'sticky') && r.top <= 1 && r.height > 0) {
+                    h = Math.max(h, r.bottom);
+                }
+            });
+            return h;
+        }
+        function go(id) {
+            var el = document.getElementById(id);
+            if (!el) { return; }
+            window.scrollTo(0, el.getBoundingClientRect().top + window.pageYOffset - 10);
+            // second pass after the layout settled: keep the heading below the fixed navbar
+            setTimeout(function () {
+                window.scrollBy(0, el.getBoundingClientRect().top - fixedTop() - 10);
+            }, 60);
+        }
+        // table of contents: scroll in place (the panel handles normal links itself)
+        $(document).off('click.aphelp').on('click.aphelp', '#ap_help a[href^="#ap-"]', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            go($(this).attr('href').substring(1));
+        });
+        var section = '[#HELP_SECTION#]';
+        if (section !== '') { setTimeout(function () { go('ap-' + section); }, 50); }
+    })();
+</script>
+[#endif VIEW_MODE#]
+
+[#if VIEW_MODE="view_package"#]
+<!-- ============ package install log ============ -->
+<p><a href="?" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-chevron-left"></i> <#LANG_BACK#></a></p>
+<h4>[#NAME#] <span class="label label-[#STATUS_CLASS#]">[#STATUS_TITLE#]</span></h4>
+<h5><#LANG_AUTOPATCHER_INSTALL_LOG#></h5>
+[#if INSTALL_LOG!=""#]
+<pre id="ap_log" class="ap-editor" style="height: 220px; background: #000080; color: #c0c0c0;">[#INSTALL_LOG#]</pre>
+<a href="#" class="btn btn-default btn-xs ap-size" data-target="ap_log"><i class="glyphicon glyphicon-resize-vertical"></i> <#LANG_AUTOPATCHER_EXPAND#></a>
+[#else#]
+<p class="text-muted"><#LANG_AUTOPATCHER_NO_INSTALL_LOG#></p>
+[#endif INSTALL_LOG#]
+<p>
+    [#if CAN_INSTALL="1"#]<a href="?view_mode=install_package&id=[#ID#]" class="btn btn-success btn-sm" onclick="return confirm('<#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-save"></i> <#LANG_AUTOPATCHER_INSTALL#></a>[#endif CAN_INSTALL#]
+    <a href="?view_mode=edit_package&id=[#ID#]" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-pencil"></i> <#LANG_EDIT#></a>
+</p>
+[#endif VIEW_MODE#]
+
+[#if VIEW_MODE="edit_package"#]
+<!-- ============ add / edit package ============ -->
+<form action="?" method="post" enctype="multipart/form-data" class="form-horizontal">
+    <div class="form-group[#if ERR_NAME#] has-error[#endif ERR_NAME#]">
+        <label class="col-md-2 control-label"><#LANG_NAME#>:</label>
+        <div class="col-md-10">
+            <input type="text" name="name" class="form-control" value="[#NAME#]" placeholder="<#LANG_AUTOPATCHER_NAME_AUTO#>">
+            <p class="help-block"><#LANG_AUTOPATCHER_NAME_HELP#></p>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_TITLE#>:</label>
+        <div class="col-md-10"><input type="text" name="title" class="form-control" value="[#TITLE#]" placeholder="<#LANG_AUTOPATCHER_NAME_AUTO#>"></div>
+    </div>
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_URL#>:</label>
+        <div class="col-md-10">
+            <input type="text" name="url" class="form-control" value="[#URL#]" placeholder="https://github.com/user/repo/archive/master.tar.gz">
+            <p class="help-block"><#LANG_AUTOPATCHER_URL_HELP#></p>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_ARCHIVE#>:</label>
+        <div class="col-md-10">
+            <input type="file" name="archive" accept=".tgz,.gz">
+            <p class="help-block"><#LANG_AUTOPATCHER_ARCHIVE_HELP#></p>
+        </div>
+    </div>
+    <div class="form-group[#if ERR_CHECK_PATH#] has-error[#endif ERR_CHECK_PATH#]">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_CHECK_PATH#>:</label>
+        <div class="col-md-10">
+            <input type="text" name="check_path" class="form-control" value="[#CHECK_PATH#]">
+            <p class="help-block"><#LANG_AUTOPATCHER_CHECK_PATH_HELP#> <code>[#DEFAULT_CHECK_PATH#]</code></p>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_MODE#>:</label>
+        <div class="col-md-10">
+            <select name="package_mode" class="form-control">
+                <option value="0"[#if MODE="0"#] selected[#endif MODE#]><#LANG_AUTOPATCHER_MODE_MISSING#></option>
+                <option value="1"[#if MODE="1"#] selected[#endif MODE#]><#LANG_AUTOPATCHER_MODE_UPDATE#></option>
+            </select>
+        </div>
+    </div>
+    <div class="form-group">
+        <label class="col-md-2 control-label"><#LANG_AUTOPATCHER_UPDATES#>:</label>
+        <div class="col-md-10">
+            <select name="update_mode" class="form-control">
+                <option value="0"[#if UPDATE_MODE="0"#] selected[#endif UPDATE_MODE#]><#LANG_AUTOPATCHER_UPD_OFF#></option>
+                <option value="1"[#if UPDATE_MODE="1"#] selected[#endif UPDATE_MODE#]><#LANG_AUTOPATCHER_UPD_NOTIFY#></option>
+                <option value="2"[#if UPDATE_MODE="2"#] selected[#endif UPDATE_MODE#]><#LANG_AUTOPATCHER_UPD_AUTO#></option>
+            </select>
+            <p class="help-block"><#LANG_AUTOPATCHER_UPDATES_HELP#> <a href="?view_mode=help&section=modules"><#LANG_AUTOPATCHER_MORE#></a></p>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="col-md-offset-2 col-md-10">
+            <button type="submit" class="btn btn-primary"><#LANG_SUBMIT#></button>
+            <a href="?" class="btn btn-default"><#LANG_CANCEL#></a>
+        </div>
+    </div>
+    <input type="hidden" name="id" value="[#ID#]">
+    <input type="hidden" name="view_mode" value="edit_package">
+    <input type="hidden" name="mode" value="update">
+</form>
+[#endif VIEW_MODE#]
+
+[#if VIEW_MODE=""#]
+<!-- ============ main ============ -->
+<p class="text-muted"><#LANG_AUTOPATCHER_ABOUT#> <a href="?view_mode=help"><#LANG_AUTOPATCHER_MORE#></a></p>
+
+<div class="panel panel-default">
+    <div class="panel-heading"><b><#LANG_AUTOPATCHER_SETTINGS#></b></div>
+    <div class="panel-body">
+        <form action="?" method="post" class="form-inline" style="margin-bottom: 10px;">
+            <div class="checkbox" style="margin-right: 15px;"><label><input type="checkbox" name="auto_apply" value="1"[#if AUTO_APPLY="1"#] checked[#endif AUTO_APPLY#]> <#LANG_AUTOPATCHER_AUTO_APPLY#></label></div>
+            <div class="checkbox" style="margin-right: 15px;"><label><input type="checkbox" name="auto_packages" value="1"[#if AUTO_PACKAGES="1"#] checked[#endif AUTO_PACKAGES#]> <#LANG_AUTOPATCHER_AUTO_PACKAGES#></label></div>
+            <div class="checkbox" style="margin-right: 15px;"><label title="<#LANG_AUTOPATCHER_RESTART_HELP#>"><input type="checkbox" name="restart" value="1"[#if RESTART="1"#] checked[#endif RESTART#]> <#LANG_AUTOPATCHER_RESTART#></label></div>
+            <div class="form-group" style="margin-right: 15px;"><label><#LANG_AUTOPATCHER_UPDATE_INTERVAL#>: <input type="number" name="update_interval" min="1" max="720" value="[#UPDATE_INTERVAL#]" class="form-control input-sm" style="width: 70px; display: inline-block;"></label></div>
+            <button type="submit" class="btn btn-primary btn-sm"><#LANG_SUBMIT#></button>
+            <input type="hidden" name="view_mode" value="update_settings">
+        </form>
+        <small class="text-muted">
+            <#LANG_AUTOPATCHER_SYSTEM_VERSION#>: <code>[#SYSTEM_VERSION#]</code>
+            [#if LAST_SYSTEM_UPDATE!=""#] &nbsp;·&nbsp; <#LANG_AUTOPATCHER_LAST_UPDATE#>: [#LAST_SYSTEM_UPDATE#][#endif LAST_SYSTEM_UPDATE#]
+            [#if LAST_RUN!=""#] &nbsp;·&nbsp; <#LANG_AUTOPATCHER_LAST_RUN#>: [#LAST_RUN#][#endif LAST_RUN#]
+            [#if LAST_UPDATE_CHECK!=""#] &nbsp;·&nbsp; <#LANG_AUTOPATCHER_LAST_UPDATE_CHECK#>: [#LAST_UPDATE_CHECK#][#endif LAST_UPDATE_CHECK#]
+        </small>
+    </div>
+</div>
+
+[#if PENDING_COUNT!="0"#]
+<div class="alert alert-warning">
+    <#LANG_AUTOPATCHER_PENDING_COUNT#>: <b>[#PENDING_COUNT#]</b>.
+    [#if AUTO_APPLY="1"#]<#LANG_AUTOPATCHER_PENDING_AUTO#>[#else#]<#LANG_AUTOPATCHER_PENDING_MANUAL#>[#endif AUTO_APPLY#]
+</div>
+[#endif PENDING_COUNT#]
+<p>
+    <a href="?view_mode=run_all" class="btn btn-success"><i class="glyphicon glyphicon-flash"></i> <#LANG_AUTOPATCHER_RUN_ALL#></a>
+    <a href="?view_mode=help" class="btn btn-default"><i class="glyphicon glyphicon-question-sign"></i> <#LANG_AUTOPATCHER_HELP#></a>
+</p>
+
+<h4><#LANG_AUTOPATCHER_PATCHES#>
+    <a href="?view_mode=edit_patch" class="btn btn-default btn-xs"><i class="glyphicon glyphicon-plus"></i> <#LANG_AUTOPATCHER_ADD_PATCH#></a>
+</h4>
+[#if TOTAL_PATCHES="0"#]
+<p class="text-muted"><#LANG_AUTOPATCHER_NO_PATCHES#> <code>[#DATA_DIR#]patches/</code></p>
+[#else#]
+<div class="table-responsive">
+<table class="table table-condensed table-hover">
+    <thead><tr><th title="<#LANG_AUTOPATCHER_ORDER_HELP#>" style="width: 1%; white-space: nowrap;"><#LANG_AUTOPATCHER_ORDER#></th><th><#LANG_AUTOPATCHER_FILE#></th><th><#LANG_AUTOPATCHER_STATUS#></th><th><#LANG_AUTOPATCHER_APPLIED#></th><th></th></tr></thead>
+    <tbody>
+    [#begin PATCHES#]
+    <tr[#if ENABLED="0"#] style="opacity: .5;"[#endif ENABLED#]>
+        <td style="white-space: nowrap;">
+            <span class="text-muted">[#POSITION#].</span>
+            <div class="btn-group-vertical btn-group-xs" style="vertical-align: middle;">
+                [#if IS_FIRST="1"#]<span class="btn btn-default disabled"><i class="glyphicon glyphicon-chevron-up"></i></span>[#else#]<a href="?view_mode=patch_up&id=[#ID#]" class="btn btn-default" title="<#LANG_AUTOPATCHER_UP#>"><i class="glyphicon glyphicon-chevron-up"></i></a>[#endif IS_FIRST#]
+                [#if IS_LAST="1"#]<span class="btn btn-default disabled"><i class="glyphicon glyphicon-chevron-down"></i></span>[#else#]<a href="?view_mode=patch_down&id=[#ID#]" class="btn btn-default" title="<#LANG_AUTOPATCHER_DOWN#>"><i class="glyphicon glyphicon-chevron-down"></i></a>[#endif IS_LAST#]
+            </div>
+        </td>
+        <td>
+            <a href="?view_mode=view_patch&id=[#ID#]"><b>[#TITLE#]</b></a><br>
+            <small class="text-muted">[#FILENAME#]</small>
+            [#if MESSAGE!=""#]<br><small class="text-danger">[#MESSAGE#]</small>[#endif MESSAGE#]
+        </td>
+        <td>
+            <span class="label label-[#STATUS_CLASS#]">[#STATUS_TITLE#]</span>
+            [#if ENABLED="0"#]<span class="label label-default"><#LANG_AUTOPATCHER_DISABLED#></span>[#endif ENABLED#]
+        </td>
+        <td><small>[#APPLIED#]</small></td>
+        <td class="text-right" style="white-space: nowrap;">
+            <a href="?view_mode=check_patch&id=[#ID#]" class="btn btn-default btn-xs" title="<#LANG_AUTOPATCHER_CHECK#>"><i class="glyphicon glyphicon-refresh"></i></a>
+            [#if CAN_APPLY="1"#]<a href="?view_mode=apply_patch&id=[#ID#]" class="btn btn-success btn-xs" title="<#LANG_AUTOPATCHER_APPLY#>"><i class="glyphicon glyphicon-ok"></i></a>[#endif CAN_APPLY#]
+            [#if CAN_REVERT="1"#]<a href="?view_mode=revert_patch&id=[#ID#]" class="btn btn-warning btn-xs" title="<#LANG_AUTOPATCHER_REVERT#>" onclick="return confirm('<#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-repeat"></i></a>[#endif CAN_REVERT#]
+            <a href="?view_mode=toggle_patch&id=[#ID#]" class="btn btn-default btn-xs" title="[#if ENABLED="1"#]<#LANG_AUTOPATCHER_DISABLE#>[#else#]<#LANG_AUTOPATCHER_ENABLE#>[#endif ENABLED#]"><i class="glyphicon glyphicon-off"></i></a>
+            <a href="?view_mode=delete_patch&id=[#ID#]" class="btn btn-danger btn-xs" title="<#LANG_DELETE#>" onclick="return confirm('<#LANG_AUTOPATCHER_DELETE_HELP#> <#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-remove"></i></a>
+        </td>
+    </tr>
+    [#end PATCHES#]
+    </tbody>
+</table>
+</div>
+[#endif TOTAL_PATCHES#]
+
+<h4><#LANG_AUTOPATCHER_PACKAGES#>
+    <a href="?view_mode=edit_package" class="btn btn-default btn-xs"><i class="glyphicon glyphicon-plus"></i> <#LANG_AUTOPATCHER_ADD_PACKAGE#></a>
+    [#if TOTAL_PACKAGES!="0"#]<a href="?view_mode=check_updates" class="btn btn-default btn-xs"><i class="glyphicon glyphicon-cloud-download"></i> <#LANG_AUTOPATCHER_CHECK_UPDATES#></a>[#endif TOTAL_PACKAGES#]
+</h4>
+[#if DOWNLOADING!="0"#]
+<script>
+    // background download in progress: refresh the list until it finishes
+    setTimeout(function () {
+        if (document.getElementById('ap_packages')) { location.reload(); }
+    }, 3000);
+</script>
+[#endif DOWNLOADING#]
+[#if UPDATES_AVAILABLE!="0"#]<div class="alert alert-info"><#LANG_AUTOPATCHER_UPDATE_AVAILABLE#>: <b>[#UPDATES_AVAILABLE#]</b></div>[#endif UPDATES_AVAILABLE#]
+[#if TOTAL_PACKAGES="0"#]
+<p class="text-muted"><#LANG_AUTOPATCHER_NO_PACKAGES#></p>
+[#else#]
+<div class="table-responsive" id="ap_packages">
+<table class="table table-condensed table-hover">
+    <thead><tr><th><#LANG_NAME#></th><th><#LANG_AUTOPATCHER_STATUS#></th><th><#LANG_AUTOPATCHER_INSTALLED_AT#></th><th><#LANG_AUTOPATCHER_CACHE#></th><th></th></tr></thead>
+    <tbody>
+    [#begin PACKAGES#]
+    <tr[#if ENABLED="0"#] style="opacity: .5;"[#endif ENABLED#]>
+        <td>
+            <b>[#NAME#]</b>[#if TITLE!=""#] — [#TITLE#][#endif TITLE#]
+            [#if NAME_PENDING="1"#]<small class="text-muted">(<#LANG_AUTOPATCHER_NAME_PENDING#>)</small>[#endif NAME_PENDING#]<br>
+            <small class="text-muted"><code>[#CHECK_PATH#]</code>
+            [#if IS_PRESENT="1"#]<span class="text-success"><#LANG_AUTOPATCHER_PRESENT#></span>[#else#]<span class="text-danger"><#LANG_AUTOPATCHER_MISSING#></span>[#endif IS_PRESENT#]
+            [#if MODE="1"#] · <#LANG_AUTOPATCHER_MODE_UPDATE#>[#endif MODE#]</small>
+            <br><small class="text-muted"><#LANG_AUTOPATCHER_VERSION#>: [#if INSTALLED_VERSION!=""#]<code>[#INSTALLED_VERSION#]</code>[#else#]?[#endif INSTALLED_VERSION#]
+            [#if UPDATE_AVAILABLE="1"#] → <code>[#LATEST_VERSION#]</code> <span class="label label-info"><#LANG_AUTOPATCHER_UPDATE_AVAILABLE#></span>[#endif UPDATE_AVAILABLE#]
+            [#if UPDATE_CHECKED!=""#] · <#LANG_AUTOPATCHER_LAST_UPDATE_CHECK#> [#UPDATE_CHECKED#][#endif UPDATE_CHECKED#]
+            [#if UPDATE_MESSAGE!=""#] · <span class="text-danger">[#UPDATE_MESSAGE#]</span>[#endif UPDATE_MESSAGE#]</small>
+            [#if MESSAGE!=""#]<br><small class="text-muted">[#MESSAGE#]</small>[#endif MESSAGE#]
+        </td>
+        <td><span class="label label-[#STATUS_CLASS#]">[#if STATUS="downloading"#]<i class="glyphicon glyphicon-refresh ap-spin"></i> [#endif STATUS#][#STATUS_TITLE#]</span>
+            [#if ENABLED="0"#]<span class="label label-default"><#LANG_AUTOPATCHER_DISABLED#></span>[#endif ENABLED#]</td>
+        <td>[#if INSTALLED!=""#]<small>[#INSTALLED#]<br>[#REASON_TITLE#], <#LANG_AUTOPATCHER_FILES#>: [#FILES#]</small>[#else#]<i class="glyphicon glyphicon-minus text-muted"></i>[#endif INSTALLED#]
+            [#if CHECKED!=""#]<br><small class="text-muted"><#LANG_AUTOPATCHER_LAST_CHECK#> [#CHECKED#]: [#CHECK_TITLE#]</small>[#endif CHECKED#]
+            [#if HAS_LOG="1"#]<br><a href="?view_mode=view_package&id=[#ID#]"><small><#LANG_AUTOPATCHER_INSTALL_LOG#></small></a>[#endif HAS_LOG#]</td>
+        <td>[#if CACHE_EXISTS="1"#]<i class="glyphicon glyphicon-ok text-success"></i> <small>[#CACHED#]</small>[#else#]<i class="glyphicon glyphicon-minus text-muted"></i>[#endif CACHE_EXISTS#]</td>
+        <td class="text-right" style="white-space: nowrap;">
+            [#if UPDATE_AVAILABLE="1"#]<a href="?view_mode=update_package&id=[#ID#]" class="btn btn-info btn-xs" title="<#LANG_AUTOPATCHER_UPDATE#>" onclick="return confirm('<#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-arrow-up"></i></a>[#endif UPDATE_AVAILABLE#]
+            <a href="?view_mode=download_package&id=[#ID#]" class="btn btn-default btn-xs" title="<#LANG_AUTOPATCHER_DOWNLOAD#>"><i class="glyphicon glyphicon-download-alt"></i></a>
+            [#if CAN_INSTALL="1"#]<a href="?view_mode=install_package&id=[#ID#]" class="btn btn-success btn-xs" title="<#LANG_AUTOPATCHER_INSTALL#>" onclick="return confirm('<#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-save"></i></a>[#endif CAN_INSTALL#]
+            <a href="?view_mode=edit_package&id=[#ID#]" class="btn btn-default btn-xs" title="<#LANG_EDIT#>"><i class="glyphicon glyphicon-pencil"></i></a>
+            <a href="?view_mode=toggle_package&id=[#ID#]" class="btn btn-default btn-xs" title="[#if ENABLED="1"#]<#LANG_AUTOPATCHER_DISABLE#>[#else#]<#LANG_AUTOPATCHER_ENABLE#>[#endif ENABLED#]"><i class="glyphicon glyphicon-off"></i></a>
+            <a href="?view_mode=delete_package&id=[#ID#]" class="btn btn-danger btn-xs" title="<#LANG_DELETE#>" onclick="return confirm('<#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-remove"></i></a>
+        </td>
+    </tr>
+    [#end PACKAGES#]
+    </tbody>
+</table>
+</div>
+[#endif TOTAL_PACKAGES#]
+
+[#endif VIEW_MODE#]
+
+[#endif ACTION#]

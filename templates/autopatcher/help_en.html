@@ -1,0 +1,177 @@
+<div class="ap-help">
+<style>
+    .ap-help h3 { margin-top: 28px; padding-top: 6px; border-top: 1px solid #ddd; }
+    .ap-help h3:first-of-type { border-top: 0; }
+    .ap-help pre { font-size: 12px; white-space: pre; overflow: auto; }
+    .ap-help .ap-toc li { margin-bottom: 2px; }
+    .ap-help td, .ap-help th { vertical-align: top !important; }
+</style>
+
+<p class="lead">AutoPatcher applies your changes to system files and brings them back, together with the modules you need, after every MajorDoMo update.</p>
+<div class="alert alert-danger">
+    <p><b>Warning: this tool can break the system.</b></p>
+    <p>A patch changes MajorDoMo system files and is applied automatically on every start. The <code>php -l</code> check catches syntax errors only. It does not find logic errors or incompatibility with the current system version or other patches. A wrong patch can stop the cycles or make the control panel unavailable, and it is applied again on the next start.</p>
+    <p>Add only patches you are sure about, and check the system after every apply.</p>
+    <p style="margin-bottom: 0;">If the panel is unavailable, recover from the console:</p>
+    <ol style="margin-bottom: 0;">
+        <li>move the patch file out of <code>cms/autopatcher/patches/</code> to any other folder, so it is not applied on the next start;</li>
+        <li>restore the originals from <code>cms/autopatcher/backup/&lt;date&gt;_&lt;patch&gt;/</code>: every file is stored there under its own path with the <code>.bak</code> extension;</li>
+        <li>restart the system.</li>
+    </ol>
+</div>
+
+<ol class="ap-toc">
+    <li><a href="#ap-how">How it works</a></li>
+    <li><a href="#ap-quick">Quick start</a></li>
+    <li><a href="#ap-formats">Patch formats</a></li>
+    <li><a href="#ap-github">Patch from a GitHub PR or commit</a></li>
+    <li><a href="#ap-states">Patch states and what to do on a conflict</a></li>
+    <li><a href="#ap-revert">Reverting a patch</a></li>
+    <li><a href="#ap-modules">Modules: automatic installation and updates</a></li>
+    <li><a href="#ap-settings">Settings</a></li>
+    <li><a href="#ap-cli">Command line</a></li>
+    <li><a href="#ap-files">Where the data is</a></li>
+    <li><a href="#ap-trouble">Troubleshooting</a></li>
+</ol>
+
+<h3 id="ap-how">1. How it works</h3>
+<p>On every start <code>cycle.php</code> removes the module install markers, and <code>control_modules</code> calls <code>install()</code> of every module. This happens <b>before</b> the <code>cycle_*.php</code> threads are launched. AutoPatcher does its work at that moment:</p>
+<ol>
+    <li>checks all enabled patches and applies the pending ones;</li>
+    <li>installs modules from its list if they are missing or an update overwrote their files;</li>
+    <li>if a module was installed, checks the patches once more.</li>
+</ol>
+<p>Cycles start with the patched files, so no restart is needed at system start. At start the module does not use the network (except downloading a missing archive with short timeouts). Module updates are checked in the background on the <code>HOURLY</code> event.</p>
+<p>The way the system is updated does not matter: System update, <code>git pull</code>, Market «Update all» or a manual copy. The patcher compares file contents, not version numbers.</p>
+
+<h3 id="ap-quick">2. Quick start</h3>
+<ol>
+    <li>Press <b>Add patch</b>.</li>
+    <li>Paste a GitHub PR or commit link, or the patch text, or upload a <code>.diff</code> file. The file name may be left empty.</li>
+    <li>Press Submit. The patch card opens with the state of every file.</li>
+    <li>If the state is «pending», press Apply or wait for the next system start.</li>
+</ol>
+<p>For a module that must stay installed: <b>Add module</b>, paste the GitHub repository link and save. The module name is detected from the archive.</p>
+
+<h3 id="ap-formats">3. Patch formats</h3>
+<p>Patches are applied in ascending order of the number at the start of the file name: <code>5-…</code>, <code>10-…</code>, <code>100-…</code>. Change the order with the up / down arrows in the list or the «Order» field in the patch card. The file is renamed automatically, and the state, enabled flag and remembered checksums stay with the patch; a file renamed manually on disk is treated as a new patch. Order matters only when patches change the same lines: a base patch must come before one built on top of it. Keep one patch per change: they are easier to refresh and revert separately.</p>
+
+<h4>Unified diff — <code>*.diff</code>, <code>*.patch</code></h4>
+<p>Regular <code>git diff</code> or <code>diff -u</code> output, paths from the MajorDoMo root. For example, a change of your fork against upstream:</p>
+<pre>cd /path/to/htdocs
+git diff upstream/alpha -- lib/hooks.inc.php &gt; cms/autopatcher/patches/10-hooks-php8.diff</pre>
+<p>New files can be created (<code>--- /dev/null</code>). Deletion, rename and binary files are not supported: such files must be excluded with an <code># exclude:</code> line.</p>
+
+<h4>SEARCH/REPLACE — <code>*.replace</code></h4>
+<p>Only a unique fragment is searched, so such a patch survives changes in neighbouring lines:</p>
+<pre># title: PHP 8: implode() with NULL
+FILE: modules/scripts/scripts_edit.inc.php
+&lt;&lt;&lt;&lt;&lt;&lt;&lt; SEARCH
+exact lines as they are in the file now
+=======
+lines after the fix
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; REPLACE</pre>
+<p>One file may contain several <code>FILE:</code> and <code>SEARCH/REPLACE</code> blocks. The fragment must occur in the file exactly once and start at the beginning of a line.</p>
+
+<h4>Header lines</h4>
+<table class="table table-condensed">
+    <tr><th>Line</th><th>Purpose</th></tr>
+    <tr><td><code># title: …</code></td><td>patch name in the list</td></tr>
+    <tr><td><code># description: …</code></td><td>notes, may be repeated</td></tr>
+    <tr><td><code># source: URL</code></td><td>where the patch comes from; enables «Refresh from source»</td></tr>
+    <tr><td><code># root: folder</code></td><td>prepended to all paths when diff paths are not relative to the MajorDoMo root (e.g. <code>modules/tinyfm</code>)</td></tr>
+    <tr><td><code># exclude: path or mask</code></td><td>skip a file (<code>docs/*</code>, <code>.github</code>); path as in the diff, without <code># root:</code></td></tr>
+</table>
+<p>In a diff, header lines must come before the first <code>diff --git</code> / <code>---</code>.</p>
+
+<h3 id="ap-github">4. Patch from a GitHub PR or commit</h3>
+<table class="table table-condensed">
+    <tr><th>Link</th><th>What is downloaded</th></tr>
+    <tr><td><code>github.com/O/R/pull/N</code></td><td>all changes of the PR</td></tr>
+    <tr><td><code>github.com/O/R/commit/SHA</code>, <code>…/pull/N/commits/SHA</code></td><td>one commit</td></tr>
+    <tr><td><code>github.com/O/R/compare/A...B</code></td><td>difference between branches</td></tr>
+    <tr><td>any <code>.diff</code> / <code>.patch</code> link</td><td>as is</td></tr>
+</table>
+<ol>
+    <li>In «Add patch» paste the link, leave the text empty, press Submit.</li>
+    <li>The diff opens in the editor. The title comes from the PR or commit; files missing in this installation, service folders and unsupported changes are excluded with <code># exclude:</code> lines. The excluded list is shown above the form.</li>
+    <li>Review the text and press Submit again: the patch is saved.</li>
+</ol>
+<p>If the PR is already merged (<code>PR: merged</code>), after a system update the patch becomes «applied» by itself and can be disabled.</p>
+<p><b>Refresh from source</b> in the patch card downloads the diff again: the PR may have new commits. Your <code># exclude:</code> and <code># description:</code> lines are kept. If the patch is applied and the diff changed, revert it first.</p>
+
+<h3 id="ap-states">5. Patch states and what to do on a conflict</h3>
+<table class="table table-condensed">
+    <tr><th>State</th><th>Meaning</th><th>What to do</th></tr>
+    <tr><td><span class="label label-success">applied</span></td><td>the new text is already in the files: applied earlier or the fix is upstream</td><td>nothing</td></tr>
+    <tr><td><span class="label label-warning">pending</span></td><td>the old text is found exactly once, the patch can be applied</td><td>Apply, or wait for the system start</td></tr>
+    <tr><td><span class="label label-danger">conflict</span></td><td>the code was changed by an update: neither old nor new text found. <b>Files are untouched.</b> One entry appears in System errors</td><td>open the patch card to see which file and fragment did not match; update the patch for the new code, or disable it if the fix is upstream</td></tr>
+    <tr><td><span class="label label-danger">error</span></td><td>e.g. <code>php -l</code> found a syntax error in the result, or the patch has an unsupported change</td><td>fix the patch text according to the message</td></tr>
+</table>
+<p>Guarantees: a patch is applied to all its files at once or not at all. A new file is first written to a temporary one, checked with <code>php -l</code> and only then replaces the original. The original is backed up first. A conflict never writes anything.</p>
+<p>The table state is checked against the files every time the module page is opened.</p>
+
+<h3 id="ap-revert">6. Reverting a patch</h3>
+<p>«Revert» applies the patch backwards and <b>disables</b> it, otherwise automatic mode would apply it again on the next start. To bring it back, enable it and press Apply.</p>
+<p>Before reverting, the patcher checks whether other applied patches change the same lines (one patch is built on top of another, or a patch is a cumulative <code>git diff</code> of a whole file). Then the revert stops and lists those patches. After confirmation they are all reverted together: the patcher picks an order that leaves no fragments behind, and disables them. If no such order exists, files are not changed.</p>
+<p><b>«Delete»</b> first reverts an applied patch, then moves the patch file to <code>cms/autopatcher/deleted/</code>. To avoid cutting native code, the patcher reverts without asking only when the files are exactly as it left them after applying: it remembers their checksums after every apply. If the files changed since (a system update, a module installation, or the patch was applied before version 1.2.2), e.g. the fix is already upstream, it asks: «Revert and delete» or «Delete without reverting». If reverting fails (conflict), the patch is not deleted.</p>
+
+<h3 id="ap-modules">7. Modules: automatic installation and updates</h3>
+<h4>Adding</h4>
+<ul>
+    <li><b>Link</b>: GitHub repository (<code>github.com/O/R</code>), branch (<code>…/tree/branch</code>), archive (<code>…/archive/…tar.gz</code>) or any <code>.tar.gz</code>. If empty, the link is taken from Market.</li>
+    <li><b>Or a file</b>: a <code>.tar.gz</code> archive.</li>
+    <li><b>Name and title</b> may be left empty: they are taken from the archive (<code>modules/&lt;name&gt;/&lt;name&gt;.class.php</code>). The record is saved right away and the archive is downloaded in the background; until then the record has a temporary name from the link.</li>
+    <li><b>Installed marker</b>: a file whose absence means the module must be installed. Default <code>modules/&lt;name&gt;/&lt;name&gt;.class.php</code>. It must be in the archive, otherwise the module gets the «marker not found» status.</li>
+</ul>
+<h4>When to install</h4>
+<ul>
+    <li><b>Only when the module is missing</b>: the marker file does not exist.</li>
+    <li><b>Reinstall when an update changed its files</b>: after every installation checksums of the module files are saved; if any of them is changed or deleted at start, the module is installed again. For modules that overwrite core files.</li>
+</ul>
+<p>Installation uses the same path as Market, from the local archive copy in <code>cms/autopatcher/packages/</code>. Without a copy the archive is downloaded: at system start with short timeouts (5 s to connect, a stalled download is aborted after 10 s); MajorDoMo Connect archives only with the Download button.</p>
+<h4>Updates</h4>
+<table class="table table-condensed">
+    <tr><th>Link</th><th>Compared by</th></tr>
+    <tr><td>GitHub: repository, branch, branch archive</td><td>SHA of the latest commit</td></tr>
+    <tr><td>GitHub: tag archive (<code>…/archive/refs/tags/…</code>)</td><td>tag of the latest release</td></tr>
+    <tr><td>other servers</td><td><code>ETag</code> or <code>Last-Modified</code></td></tr>
+</table>
+<p>Modes: «Do not check», «Check and notify» (the module row shows «Update available» and an Update button), «Check and install automatically». Checks run on the <code>HOURLY</code> event at the interval from settings and with the «Check for updates» button.</p>
+<h4>Log</h4>
+<p>«Install log» of every module shows the steps of the last installation and the list of files. It is written after every step, so after a failure you can see where it stopped. If a module installer killed the process at start, the module gets the «install crashed» status and is installed manually only.</p>
+
+<h3 id="ap-settings">8. Settings</h3>
+<ul>
+    <li><b>Apply patches automatically</b>: at system start. When off, patches are only checked.</li>
+    <li><b>Install modules automatically</b>: the same for modules.</li>
+    <li><b>Restart services after PHP files were changed</b>: after manual apply, revert or install, so cycles pick up the new code. Not needed at system start.</li>
+    <li><b>Check module updates every, h</b>: background check interval.</li>
+</ul>
+<p><b>Apply all now</b> does the same as at start without waiting for a restart.</p>
+
+<h3 id="ap-cli">9. Command line</h3>
+<pre>php /path/to/htdocs/modules/autopatcher/cli.php status   # changes nothing
+php /path/to/htdocs/modules/autopatcher/cli.php apply</pre>
+<p>Exit code <code>1</code> means there are conflicts or errors. Useful in start scripts. Called over HTTP, <code>cli.php</code> returns 403.</p>
+
+<h3 id="ap-files">10. Where the data is</h3>
+<p>Everything is in <code>cms/autopatcher/</code>. Neither a system update nor an update of this module touches this folder.</p>
+<table class="table table-condensed">
+    <tr><td><code>patches/</code></td><td>your patches</td></tr>
+    <tr><td><code>packages/</code></td><td>module archives <code>&lt;name&gt;.tgz</code>, install logs, checksums</td></tr>
+    <tr><td><code>backup/</code></td><td>originals of changed files (<code>*.bak</code>), last 30 runs</td></tr>
+    <tr><td><code>deleted/</code></td><td>patches removed from the list</td></tr>
+</table>
+<p><code>config.php</code> and the <code>cms/autopatcher/</code> folder are never patched. After uninstalling the module, changed files stay as they are; to restore the originals, revert the patches before uninstalling.</p>
+<p>If a whole module is modified, the standard <code>ignore_updates</code> table can be used instead: the system update skips <code>modules/&lt;name&gt;</code> and <code>templates/&lt;name&gt;</code>. AutoPatcher is for targeted changes, including <code>lib/</code> and root files.</p>
+
+<h3 id="ap-trouble">11. Troubleshooting</h3>
+<ul>
+    <li><b>«Last run»</b> on the main page shows when and how the last run went (<code>boot</code> means system start). If a run was interrupted, it shows at which stage.</li>
+    <li><b>Log</b>: <code>cms/debmes/&lt;date&gt;/autopatcher.log</code>.</li>
+    <li><b>State without a browser</b>: <code>cli.php status</code>.</li>
+    <li><b>If «Last run» does not change after a restart</b>, check that <code>cycle.php</code> contains the module reinstall block: <code>grep -n "Re-installing module" cycle.php</code>.</li>
+    <li><b>If a module is reinstalled on every start</b>, its marker file does not appear after installation, or the module changes its own files. Fix the «Installed marker» or choose «Only when the module is missing».</li>
+</ul>
+</div>
