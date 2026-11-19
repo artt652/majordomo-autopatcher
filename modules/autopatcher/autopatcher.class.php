@@ -23,7 +23,11 @@ class autopatcher extends module
     public $id;
     public $engine = null;
     public $is_boot = false;
+    const REPEAT_LIMIT = 3;
+    const LOOP_PATCH_MESSAGE = 'Patch is applied again on every start: something reverts it each time (another patch, a module reinstall or a script). Automatic apply stopped, check the patch and press Apply.';
     public $runStage = '';
+    public $autoRunning = false;
+    public $inSecondPass = false;
     // GitHub endpoints (properties so a test stand can point them to a mock server)
     public $githubApi = 'https://api.github.com';
     public $githubWeb = 'https://github.com';
@@ -132,7 +136,8 @@ class autopatcher extends module
 
     function esc($text)
     {
-        return str_replace(array('[', ']', '#'), array('&#91;', '&#93;', '&#35;'), htmlspecialchars((string)$text, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        // strtr replaces in one pass: '#' inside the '&#91;' just produced must not be replaced again
+        return strtr(htmlspecialchars((string)$text, ENT_QUOTES | ENT_HTML5, 'UTF-8'), array('[' => '&#91;', ']' => '&#93;', '#' => '&#35;'));
     }
 
     function systemUpdateSignature()
@@ -335,6 +340,9 @@ class autopatcher extends module
         if ($action == 'apply' && count($res['changed'])) {
             $rec['APPLIED'] = date('Y-m-d H:i:s');
         }
+        if ($action != 'check' && !$this->autoRunning) {
+            $rec['AUTO_COUNT'] = 0; // a manual action re-enables automatic mode for this patch
+        }
         if (count($res['changed'])) {
             $after = array();
             foreach ($res['changed'] as $path) {
@@ -342,6 +350,8 @@ class autopatcher extends module
             }
             // other patches applied by AutoPatcher to the same files keep their ownership
             $this->moveAppliedHashes((int)$rec['ID'], $before, $after);
+            // a patch on a module file is not "the module was overwritten by an update"
+            $this->movePackageBaselines($before, $after);
             if ($action == 'apply') {
                 // remember what AutoPatcher itself wrote: a later delete may revert it safely
                 $rec['APPLIED_HASH'] = json_encode($after);
@@ -381,6 +391,31 @@ class autopatcher extends module
             }
             if ($changed) {
                 SQLExec("UPDATE autopatcher_patches SET APPLIED_HASH='" . DBSafe(json_encode($h)) . "' WHERE ID=" . (int)$row['ID']);
+            }
+        }
+    }
+
+    /**
+     * Module checksums (packages/<name>.baseline.json) follow changes made by patches,
+     * otherwise a patch on a module file makes the module reinstall on every start,
+     * the reinstall removes the patch, the patch is applied again, and so on
+     */
+    function movePackageBaselines($before, $after)
+    {
+        foreach (glob($this->dataDir() . 'packages/*.baseline.json') ?: array() as $file) {
+            $data = json_decode((string)file_get_contents($file), true);
+            if (!is_array($data) || empty($data['files'])) {
+                continue;
+            }
+            $changed = false;
+            foreach ($after as $path => $md5) {
+                if (isset($data['files'][$path]) && isset($before[$path]) && $data['files'][$path] === $before[$path]) {
+                    $data['files'][$path] = $md5;
+                    $changed = true;
+                }
+            }
+            if ($changed) {
+                @file_put_contents($file, json_encode($data));
             }
         }
     }
@@ -1015,7 +1050,8 @@ class autopatcher extends module
         }
         @file_put_contents($this->packageLogFile($name), $list, FILE_APPEND);
         @unlink(ROOT . 'cms/modules_installed/' . $name . '.installed');
-        @unlink(ROOT . 'cms/modules_installed/control_modules.installed');
+        // control_modules.installed is NOT removed: that would re-run install() of every module
+        // (AutoPatcher included) on the next page request; the new module is installed below
 
         // run module install() now if its class is not loaded in this process yet
         $class_file = DIR_MODULES . $name . '/' . $name . '.class.php';
@@ -1129,6 +1165,9 @@ class autopatcher extends module
             }
         }
         $rec['LAST_CHECK'] = $reason == '' ? 'ok' : $reason;
+        if ($reason == '' && !empty($rec['AUTO_COUNT'])) {
+            $rec['AUTO_COUNT'] = 0;
+        }
         $rec['CHECKED'] = date('Y-m-d H:i:s');
         SQLUpdate('autopatcher_packages', $rec);
         DebMes("Check " . $rec['NAME'] . ": " . $rec['LAST_CHECK'] . ($details != '' ? " ($details)" : ''), 'autopatcher');
@@ -1241,16 +1280,48 @@ class autopatcher extends module
     // Automatic run (boot / after update)
     // ------------------------------------------------------------------
 
+    /**
+     * Consecutive automatic runs that had to change the same patch / module.
+     * A stable item resets to 0; REPEAT_LIMIT in a row means a loop: stop and report.
+     */
+    function countRepeat($table, &$rec, $acted, $message)
+    {
+        $count = $acted ? (int)$rec['AUTO_COUNT'] + 1 : 0;
+        if ($count == (int)$rec['AUTO_COUNT']) {
+            return;
+        }
+        $rec['AUTO_COUNT'] = $count;
+        SQLExec("UPDATE $table SET AUTO_COUNT=" . $count . " WHERE ID=" . (int)$rec['ID']);
+        if ($count >= self::REPEAT_LIMIT) {
+            $name = isset($rec['FILENAME']) ? $rec['FILENAME'] : $rec['NAME'];
+            SQLExec("UPDATE $table SET STATUS='error', MESSAGE='" . DBSafe($message) . "' WHERE ID=" . (int)$rec['ID']);
+            DebMes("Loop protection: $name: $message", 'autopatcher');
+            if (function_exists('registerError')) {
+                registerError('autopatcher', $name . ': ' . $message);
+            }
+        }
+    }
+
     function runPatches($auto_patches, &$summary)
     {
         $this->syncPatches();
         $rows = $this->sortPatchRows(SQLSelect("SELECT * FROM autopatcher_patches WHERE ENABLED=1"));
         foreach ($rows as $rec) {
             $this->runStage = 'patch ' . $rec['FILENAME'];
+            if ($auto_patches && (int)$rec['AUTO_COUNT'] >= self::REPEAT_LIMIT) {
+                // applied on several runs in a row: something reverts it every time
+                $this->processPatch($rec, 'check');
+                SQLExec("UPDATE autopatcher_patches SET STATUS='error', MESSAGE='" . DBSafe(self::LOOP_PATCH_MESSAGE) . "' WHERE ID=" . (int)$rec['ID']);
+                $summary['error'][] = $rec['FILENAME'];
+                continue;
+            }
             $res = $this->processPatch($rec, $auto_patches ? 'apply' : 'check');
             if (count($res['changed'])) {
                 $summary['applied'][] = $rec['FILENAME'];
                 $summary['changed'] = array_merge($summary['changed'], $res['changed']);
+            }
+            if ($auto_patches && !$this->inSecondPass) {
+                $this->countRepeat('autopatcher_patches', $rec, count($res['changed']) > 0, self::LOOP_PATCH_MESSAGE);
             }
             if ($res['status'] == AutopatcherEngine::ST_CONFLICT) {
                 $summary['conflict'][] = $rec['FILENAME'];
@@ -1313,6 +1384,7 @@ class autopatcher extends module
             return $summary;
         }
         $this->runStage = 'start';
+        $this->autoRunning = true;
         if (!$this->shutdownRegistered) {
             register_shutdown_function(array($this, 'shutdownCheck'));
             $this->shutdownRegistered = true;
@@ -1366,16 +1438,25 @@ class autopatcher extends module
                     $this->setPackageStatus($rec, 'pending', $reason);
                     continue;
                 }
+                if ($reason == 'files_changed' && (int)$rec['AUTO_COUNT'] >= self::REPEAT_LIMIT) {
+                    continue; // reinstalled on several runs in a row: stopped, see the module message
+                }
                 $this->runStage = 'module ' . $rec['NAME'];
                 if ($this->installPackage($rec, $reason)) {
                     $summary['packages'][] = $rec['NAME'];
+                }
+                if ($reason == 'files_changed') {
+                    $this->countRepeat('autopatcher_packages', $rec, true,
+                        "Module is reinstalled on every start: its files change after each installation (a patch on its files, the module itself or a script). Automatic reinstall stopped; choose «Only when the module is missing» or press Install.");
                 }
             }
 
             // 3. a module may have overwritten patched files: second pass
             if (count($summary['packages'])) {
                 $this->runStage = 'patches (after modules)';
+                $this->inSecondPass = true;
                 $this->runPatches($auto_patches, $summary);
+                $this->inSecondPass = false;
             }
 
             $this->config['LAST_RUN'] = date('Y-m-d H:i:s') . ' (' . $trigger . ')';
@@ -1384,8 +1465,17 @@ class autopatcher extends module
             // 3. restart services so running cycles pick up changed PHP code.
             //    During boot the cycles are not started yet - no restart needed.
             if (!$this->is_boot && (int)$this->cfg('RESTART', 1) && (count($summary['packages']) || count(preg_grep('/\.php$/i', $summary['changed'])))) {
-                setRebootRequired('autopatcher');
-                $summary['restart'] = true;
+                if ($trigger == 'manual' || $trigger == 'cli' || time() - (int)$this->cfg('LAST_AUTO_RESTART', 0) > 600) {
+                    setRebootRequired('autopatcher');
+                    $summary['restart'] = true;
+                    if ($trigger != 'manual' && $trigger != 'cli') {
+                        $this->config['LAST_AUTO_RESTART'] = time();
+                        $this->saveConfig();
+                    }
+                } else {
+                    // automatic restarts at most once in 10 minutes: no endless restart loop
+                    DebMes("Restart not requested: the previous automatic restart was less than 10 minutes ago", 'autopatcher');
+                }
             }
             if (count($summary['applied']) || count($summary['packages']) || count($summary['conflict']) || count($summary['error'])) {
                 DebMes("Run ($trigger): applied=" . implode(',', $summary['applied'])
@@ -1398,6 +1488,7 @@ class autopatcher extends module
             $summary['error'][] = $e->getMessage();
         }
         $this->runStage = '';
+        $this->autoRunning = false;
         $engine->unlock();
         return $summary;
     }
@@ -1467,6 +1558,99 @@ class autopatcher extends module
                     $this->redirect("?view_mode=view_patch&id=" . $rec['ID'] . ($err != '' ? "&err_msg=" . urlencode($err) : "&ok_msg=" . urlencode(LANG_AUTOPATCHER_ORDER_SAVED)));
                 }
                 $this->redirect("?" . ($err != '' ? "err_msg=" . urlencode($err) : ''));
+            }
+        }
+        if ($id && in_array($this->view_mode, array('dryrun_patch', 'dryrun_file', 'dryrun_archive'))) {
+            $rec = SQLSelectOne("SELECT * FROM autopatcher_patches WHERE ID=" . $id);
+            if (!empty($rec['ID'])) {
+                $reverse = gr('reverse', 'int') ? true : false;
+                list($patch, $eval) = $this->dryRun($rec, $reverse);
+                $base = preg_replace('/\.(diff|patch|replace)$/i', '', $rec['FILENAME']) . ($reverse ? '-revert' : '') . '-dryrun';
+                if ($this->view_mode == 'dryrun_file') {
+                    // only files of this patch can be downloaded
+                    $path = gr('path');
+                    if (!isset($eval['files'][$path])) {
+                        $this->redirect("?view_mode=dryrun_patch&id=" . $rec['ID'] . "&reverse=" . (int)$reverse);
+                    }
+                    $f = $eval['files'][$path];
+                    if (gr('side') == 'before') {
+                        $content = is_file(ROOT . $path) ? (string)file_get_contents(ROOT . $path) : '';
+                    } else {
+                        $content = ($f['status'] == AutopatcherEngine::ST_PENDING && is_string($f['new'])) ? $f['new']
+                            : (is_file(ROOT . $path) ? (string)file_get_contents(ROOT . $path) : '');
+                    }
+                    $this->sendDownload(basename($path), $content);
+                }
+                if ($this->view_mode == 'dryrun_archive') {
+                    $files = array();
+                    foreach ($eval['files'] as $path => $f) {
+                        if ($f['status'] != AutopatcherEngine::ST_PENDING) {
+                            continue;
+                        }
+                        if (is_file(ROOT . $path)) {
+                            $files['before/' . $path] = (string)file_get_contents(ROOT . $path);
+                        }
+                        if (is_string($f['new'])) {
+                            $files['after/' . $path] = $f['new'];
+                        }
+                    }
+                    if (!count($files)) {
+                        $this->redirect("?view_mode=dryrun_patch&id=" . $rec['ID'] . "&reverse=" . (int)$reverse . "&err_msg=" . urlencode(LANG_AUTOPATCHER_DRY_NOTHING));
+                    }
+                    $arc = $this->buildArchive($files);
+                    if ($arc === false) {
+                        $this->redirect("?view_mode=dryrun_patch&id=" . $rec['ID'] . "&reverse=" . (int)$reverse . "&err_msg=" . urlencode(LANG_AUTOPATCHER_DRY_NO_ARCHIVE));
+                    }
+                    $this->sendDownload($base . '.' . $arc[1], $arc[0], $arc[2]);
+                }
+                // page
+                $out['ID'] = (int)$rec['ID'];
+                $out['TITLE'] = $this->esc($patch['title']);
+                $out['FILENAME'] = $this->esc($rec['FILENAME']);
+                $out['REVERSE'] = $reverse ? 1 : 0;
+                $changed = 0;
+                $list = array();
+                foreach ($eval['files'] as $path => $f) {
+                    $is_changed = ($f['status'] == AutopatcherEngine::ST_PENDING) ? 1 : 0;
+                    $changed += $is_changed;
+                    $st = $f['status'];
+                    $list[] = array(
+                        'ID' => (int)$rec['ID'],
+                        'REVERSE' => $reverse ? 1 : 0,
+                        'PATH' => $this->esc($path),
+                        'PATH_URL' => urlencode($path),
+                        'STATUS_TITLE' => $is_changed ? ($f['new'] === false ? LANG_AUTOPATCHER_DRY_WILL_REMOVE : LANG_AUTOPATCHER_DRY_WILL_CHANGE)
+                            : ($st == AutopatcherEngine::ST_APPLIED ? LANG_AUTOPATCHER_DRY_UNCHANGED : $this->statusTitle($st)),
+                        'STATUS_CLASS' => $is_changed ? 'warning' : $this->statusClass($st),
+                        'CHANGED' => $is_changed,
+                        'HAS_BEFORE' => is_file(ROOT . $path) ? 1 : 0,
+                        'CAN_AFTER' => ($is_changed && is_string($f['new'])) ? 1 : 0,
+                        'DETAILS' => nl2br($this->esc(implode("\n", $f['details']))),
+                        'HUNKS' => $is_changed ? $this->hunksHtml($f) : '',
+                    );
+                }
+                $out['DRY_FILES'] = $list;
+                $out['CHANGED_COUNT'] = $changed;
+                $out['DRY_STATUS'] = $eval['status'];
+                $out['DRY_ERROR'] = nl2br($this->esc($eval['status'] == AutopatcherEngine::ST_ERROR ? $eval['message'] : ''));
+                $out['OK_MSG'] = $this->esc($ok_msg);
+                $out['ERR_MSG'] = $this->esc($err_msg);
+                return;
+            }
+        }
+        if ($id && $this->view_mode == 'skip_files') {
+            $rec = SQLSelectOne("SELECT * FROM autopatcher_patches WHERE ID=" . $id);
+            if (!empty($rec['ID'])) {
+                // only paths the server itself offered can be excluded
+                $allowed = array_keys($this->skipCandidates($engine->loadPatch($rec['FILENAME'])));
+                $chosen = isset($_REQUEST['skip']) && is_array($_REQUEST['skip']) ? array_values(array_intersect($allowed, $_REQUEST['skip'])) : array();
+                $back = "?view_mode=view_patch&id=" . $rec['ID'];
+                if (!count($chosen)) {
+                    $this->redirect($back . "&err_msg=" . urlencode(LANG_AUTOPATCHER_SKIP_NONE));
+                }
+                $n = $this->addExcludeLines($rec['FILENAME'], $chosen);
+                $res = $this->processPatch($rec, 'check');
+                $this->redirect($back . "&ok_msg=" . urlencode(LANG_AUTOPATCHER_SKIP_DONE . ': ' . $n . '. ' . $this->statusTitle($res['status'])));
             }
         }
         if ($id && $this->view_mode == 'refresh_patch') {
@@ -1649,6 +1833,7 @@ class autopatcher extends module
                 if ($this->view_mode == 'download_package') {
                     $ok = $this->downloadPackage($rec);
                 } else {
+                    $rec['AUTO_COUNT'] = 0; // a manual install re-enables automatic reinstall
                     $ok = $this->installPackage($rec);
                     if ($ok && (int)$this->cfg('RESTART', 1)) {
                         setRebootRequired('autopatcher');
@@ -1879,6 +2064,115 @@ class autopatcher extends module
         $this->redirect("?ok_msg=" . urlencode($msg));
     }
 
+    /**
+     * Dry run: what the patch (or its revert) would write, nothing is changed
+     * @return array [patch, eval]
+     */
+    function dryRun($rec, $reverse)
+    {
+        $engine = $this->getEngine();
+        $patch = $engine->loadPatch($rec['FILENAME']);
+        return array($patch, $engine->evaluate($patch, $reverse));
+    }
+
+    /**
+     * Changed regions of one file as HTML (escaped): context grey, removed red, added green
+     */
+    function hunksHtml($f)
+    {
+        $out = '';
+        $line = function ($cls, $sign, $text) {
+            return '<div class="ap-l ap-' . $cls . '">' . $sign . ' ' . $this->esc($text) . '</div>';
+        };
+        if (!empty($f['create']) && $f['new'] !== false && $f['new'] !== null) {
+            $lines = explode("\n", rtrim(str_replace("\r\n", "\n", $f['new']), "\n"));
+            $out .= '<div class="ap-hunk"><div class="ap-hh">' . LANG_AUTOPATCHER_DRY_NEW_FILE . '</div>';
+            foreach (array_slice($lines, 0, 500) as $l) {
+                $out .= $line('add', '+', $l);
+            }
+            if (count($lines) > 500) {
+                $out .= '<div class="ap-hh">… +' . (count($lines) - 500) . '</div>';
+            }
+            return $out . '</div>';
+        }
+        if ($f['new'] === false) {
+            return '<div class="ap-hunk"><div class="ap-hh">' . LANG_AUTOPATCHER_DRY_REMOVED_FILE . '</div></div>';
+        }
+        foreach ($f['changes'] as $c) {
+            $out .= '<div class="ap-hunk"><div class="ap-hh">' . LANG_AUTOPATCHER_DRY_LINE . ' ' . (int)$c['line'] . '</div>';
+            foreach ($c['before'] as $l) {
+                $out .= $line('ctx', ' ', $l);
+            }
+            foreach ($c['old'] as $l) {
+                $out .= $line('del', '-', $l);
+            }
+            foreach ($c['new'] as $l) {
+                $out .= $line('add', '+', $l);
+            }
+            foreach ($c['after'] as $l) {
+                $out .= $line('ctx', ' ', $l);
+            }
+            $out .= '</div>';
+        }
+        return $out;
+    }
+
+    /**
+     * Send a file to the browser and stop (the panel output is discarded)
+     */
+    function sendDownload($name, $content, $mime = 'application/octet-stream')
+    {
+        while (ob_get_level()) {
+            ob_end_clean();
+        }
+        header('Content-Type: ' . $mime);
+        header('Content-Disposition: attachment; filename="' . str_replace('"', '', $name) . '"');
+        header('Content-Length: ' . strlen($content));
+        header('Cache-Control: no-store');
+        echo $content;
+        exit;
+    }
+
+    /**
+     * Archive of path => content: .zip if ZipArchive exists, otherwise .tar.gz (PharData)
+     * @return array|false [binary, extension, mime]
+     */
+    function buildArchive($files)
+    {
+        $tmp = $this->dataDir() . 'tmp/dryrun_' . getmypid() . '_' . mt_rand(1000, 9999);
+        $result = false;
+        if (class_exists('ZipArchive')) {
+            $zip = new ZipArchive();
+            if ($zip->open($tmp . '.zip', ZipArchive::CREATE | ZipArchive::OVERWRITE) === true) {
+                foreach ($files as $path => $content) {
+                    $zip->addFromString($path, $content);
+                }
+                $zip->close();
+                $result = array((string)file_get_contents($tmp . '.zip'), 'zip', 'application/zip');
+            }
+            @unlink($tmp . '.zip');
+        } elseif (class_exists('PharData')) {
+            try {
+                $tar = new PharData($tmp . '.tar');
+                foreach ($files as $path => $content) {
+                    $tar->addFromString($path, $content);
+                }
+                try {
+                    $tar->compress(Phar::GZ);
+                    $result = array((string)file_get_contents($tmp . '.tar.gz'), 'tar.gz', 'application/gzip');
+                } catch (\Throwable $e) {
+                    $result = array((string)file_get_contents($tmp . '.tar'), 'tar', 'application/x-tar');
+                }
+                unset($tar);
+            } catch (\Throwable $e) {
+                DebMes("Dry run archive failed: " . $e->getMessage(), 'autopatcher');
+            }
+            @unlink($tmp . '.tar');
+            @unlink($tmp . '.tar.gz');
+        }
+        return $result;
+    }
+
     function statusTitle($status)
     {
         $map = array(
@@ -2034,6 +2328,63 @@ class autopatcher extends module
         }
         $res['content'] = implode("\n", $head) . "\n" . $body;
         return $res;
+    }
+
+    /**
+     * Files the patch cannot apply that may be skipped with "# exclude:" lines:
+     * unsupported changes (deletion, rename, copy, binary) and changed files that are
+     * not in this installation. Key: path as written in the patch (without "# root:").
+     * @return array path => reason code
+     */
+    function skipCandidates($patch)
+    {
+        $res = array();
+        if (!empty($patch['unsupported_left'])) {
+            foreach ($patch['unsupported_left'] as $path => $reason) {
+                $res[$path] = $reason;
+            }
+        }
+        foreach ($patch['files'] as $path => $spec) {
+            if (empty($spec['create']) && !is_file(ROOT . $path)) {
+                $res[isset($spec['src']) ? $spec['src'] : $path] = 'not in this installation';
+            }
+        }
+        return $res;
+    }
+
+    function skipReasonTitle($reason)
+    {
+        $map = array('file deletion' => 'LANG_AUTOPATCHER_SKIP_DELETION', 'rename' => 'LANG_AUTOPATCHER_SKIP_RENAME',
+            'copy' => 'LANG_AUTOPATCHER_SKIP_COPY', 'binary file' => 'LANG_AUTOPATCHER_SKIP_BINARY',
+            'not in this installation' => 'LANG_AUTOPATCHER_SKIP_MISSING');
+        return (isset($map[$reason]) && defined($map[$reason])) ? constant($map[$reason]) : $this->esc($reason);
+    }
+
+    /**
+     * Add "# exclude:" lines to the patch header (after the leading comment lines)
+     */
+    function addExcludeLines($filename, $paths)
+    {
+        $engine = $this->getEngine();
+        $text = str_replace("\r\n", "\n", (string)LoadFile($engine->patchesDir() . $filename));
+        $lines = explode("\n", $text);
+        $at = 0;
+        while ($at < count($lines) && preg_match('/^#/', $lines[$at])) {
+            $at++;
+        }
+        $add = array();
+        foreach ($paths as $path) {
+            $line = '# exclude: ' . $path;
+            if (!in_array($line, $lines)) {
+                $add[] = $line;
+            }
+        }
+        if (!count($add)) {
+            return 0;
+        }
+        array_splice($lines, $at, 0, $add);
+        SaveFile($engine->patchesDir() . $filename, implode("\n", $lines));
+        return count($add);
     }
 
     /**
@@ -2208,6 +2559,15 @@ class autopatcher extends module
             $out['FILES'] = $files;
             $out['EVAL_MESSAGE'] = nl2br($this->esc($eval['status'] == AutopatcherEngine::ST_ERROR ? $eval['message'] : ''));
             $out['SOURCE'] = $this->esc($patch['source']);
+            $skip = array();
+            foreach ($this->skipCandidates($patch) as $path => $reason) {
+                $skip[] = array('PATH' => $this->esc($path), 'REASON' => $this->skipReasonTitle($reason));
+            }
+            $out['SKIP_FILES'] = $skip;
+            $out['SKIP_COUNT'] = count($skip);
+            if (count($skip) && $eval['status'] == AutopatcherEngine::ST_ERROR && !empty($patch['unsupported_left'])) {
+                $out['EVAL_MESSAGE'] = ''; // explained by the skip block
+            }
             $out['NUMBER'] = (int)self::patchNumber($filename);
             $all = $this->sortPatchRows(SQLSelect("SELECT ID, FILENAME FROM autopatcher_patches"));
             foreach ($all as $i => $row) {
@@ -2382,6 +2742,7 @@ class autopatcher extends module
  autopatcher_patches: CHECKED datetime
  autopatcher_patches: APPLIED datetime
  autopatcher_patches: APPLIED_HASH text
+ autopatcher_patches: AUTO_COUNT int(10) NOT NULL DEFAULT '0'
 
  autopatcher_packages: ID int(10) unsigned NOT NULL auto_increment
  autopatcher_packages: NAME varchar(100) NOT NULL DEFAULT ''
@@ -2406,6 +2767,7 @@ class autopatcher extends module
  autopatcher_packages: UPDATE_MESSAGE varchar(255) NOT NULL DEFAULT ''
  autopatcher_packages: NAME_AUTO int(3) NOT NULL DEFAULT '0'
  autopatcher_packages: DL_STARTED datetime
+ autopatcher_packages: AUTO_COUNT int(10) NOT NULL DEFAULT '0'
 EOD;
         parent::dbInstall($data);
     }

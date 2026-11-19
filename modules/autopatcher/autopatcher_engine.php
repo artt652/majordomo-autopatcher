@@ -152,7 +152,7 @@ class AutopatcherEngine
     public function loadPatch($id)
     {
         $patch = array('id' => $id, 'title' => $id, 'description' => '', 'type' => '', 'files' => array(), 'error' => '',
-            'source' => '', 'root' => '', 'exclude' => array(), 'unsupported' => array(), 'excluded' => array());
+            'source' => '', 'root' => '', 'exclude' => array(), 'unsupported' => array(), 'excluded' => array(), 'unsupported_left' => array());
         if (!self::isSafeId($id) || !is_file($this->patchesDir() . $id)) {
             $patch['error'] = 'Patch file not found';
             return $patch;
@@ -168,7 +168,7 @@ class AutopatcherEngine
     {
         if ($patch === null) {
             $patch = array('id' => '', 'title' => '', 'description' => '', 'type' => '', 'files' => array(), 'error' => '',
-                'source' => '', 'root' => '', 'exclude' => array(), 'unsupported' => array(), 'excluded' => array());
+                'source' => '', 'root' => '', 'exclude' => array(), 'unsupported' => array(), 'excluded' => array(), 'unsupported_left' => array());
         }
         $text = str_replace("\r\n", "\n", (string)$text);
         if (substr($text, 0, 3) === "\xEF\xBB\xBF") {
@@ -268,12 +268,11 @@ class AutopatcherEngine
                 $patch['excluded'][] = $path;
             } else {
                 $problems[] = $path . ' (' . $reason . ')';
+                $patch['unsupported_left'][$path] = $reason;
             }
         }
-        if (count($problems)) {
-            $patch['error'] = 'Not supported: ' . implode(', ', $problems) . '. Add "# exclude: <path>" to skip these files';
-            return;
-        }
+        // root prefix before the unsupported check: file paths are final in both cases;
+        // 'src' keeps the path as written in the patch (for "# exclude:" lines)
         if ($patch['root'] !== '') {
             if (!$this->isSafePath($patch['root'] . '/x')) {
                 $patch['error'] = 'Unsafe root: ' . $patch['root'];
@@ -281,9 +280,19 @@ class AutopatcherEngine
             }
             $files = array();
             foreach ($patch['files'] as $path => $spec) {
+                $spec['src'] = $path;
                 $files[$patch['root'] . '/' . $path] = $spec;
             }
             $patch['files'] = $files;
+        } else {
+            foreach ($patch['files'] as $path => &$spec) {
+                $spec['src'] = $path;
+            }
+            unset($spec);
+        }
+        if (count($problems)) {
+            $patch['error'] = 'Not supported: ' . implode(', ', $problems) . '. Open the patch to skip these files';
+            return;
         }
     }
 
@@ -538,7 +547,37 @@ class AutopatcherEngine
             if (count($replacePos) > 1) {
                 return array(self::ST_CONFLICT, $content, 'new text found ' . count($replacePos) . ' times', 0);
             }
+            // another patch inserted its lines at the same anchor, between the anchor and ours:
+            // our insertion is still there, applying again would duplicate it on every run
+            $apos = self::pickPosition($content, $searchPos, $expectedLine);
+            if ($apos !== false) {
+                $k = strpos($replace, $search);
+                $near = self::partsNear($content, $apos, strlen($search), substr($replace, 0, $k), substr($replace, $k + strlen($search)));
+                if ($near !== false) {
+                    return array(self::ST_APPLIED, $content, '', self::lineOf($content, $apos));
+                }
+            }
         } else {
+            if ($searchContainsReplace && !count($searchPos) && count($replacePos)) {
+                // reverting an insertion whose lines are no longer right at the anchor
+                // (another patch inserted at the same anchor): remove just our lines
+                $apos = self::pickPosition($content, $replacePos, $expectedLine);
+                if ($apos !== false) {
+                    $k = strpos($search, $replace);
+                    $near = self::partsNear($content, $apos, strlen($replace), substr($search, 0, $k), substr($search, $k + strlen($replace)));
+                    if ($near !== false) {
+                        $new = $content;
+                        // cut the later part first so the earlier offset stays valid
+                        if ($near['suffix'] !== null) {
+                            $new = substr($new, 0, $near['suffix'][0]) . substr($new, $near['suffix'][0] + $near['suffix'][1]);
+                        }
+                        if ($near['prefix'] !== null) {
+                            $new = substr($new, 0, $near['prefix'][0]) . substr($new, $near['prefix'][0] + $near['prefix'][1]);
+                        }
+                        return array(self::ST_PENDING, $new, '', self::lineOf($content, $apos));
+                    }
+                }
+            }
             if (!count($searchPos) && ($replace === '' || count($replacePos))) {
                 // old text gone and new text present (or pure deletion)
                 if ($searchContainsReplace || $replace === '' || self::pickPosition($content, $replacePos, $expectedLine) !== false) {
@@ -558,6 +597,89 @@ class AutopatcherEngine
             return array(self::ST_CONFLICT, $content, 'old text found ' . count($searchPos) . ' times (ambiguous)', 0);
         }
         return array(self::ST_CONFLICT, $content, 'old text not found (file changed upstream?)', 0);
+    }
+
+    /**
+     * Inserted parts of an anchor patch near the anchor: $prefix right before it (other lines
+     * may be between) and $suffix after it, within 100 lines. Whitespace-only parts cannot be
+     * recognized reliably and are not accepted.
+     * @return array|false ['prefix' => [pos, len]|null, 'suffix' => [pos, len]|null]
+     */
+    protected static function partsNear($content, $apos, $alen, $prefix, $suffix)
+    {
+        $res = array('prefix' => null, 'suffix' => null);
+        if (trim($prefix) === '' && trim($suffix) === '') {
+            return false;
+        }
+        $window = 100;
+        if ($suffix !== '') {
+            if (trim($suffix) === '') {
+                return false;
+            }
+            $start = $apos + $alen;
+            $limit = $start;
+            for ($i = 0; $i < $window && $limit !== false && $limit < strlen($content); $i++) {
+                $limit = strpos($content, "\n", $limit + 1);
+            }
+            $limit = ($limit === false) ? strlen($content) : $limit + 1;
+            $found = null;
+            foreach (self::linePositions(substr($content, $start, $limit - $start), $suffix) as $p) {
+                $found = array($start + $p, strlen($suffix));
+                break;
+            }
+            if ($found === null) {
+                return false;
+            }
+            $res['suffix'] = $found;
+        }
+        if ($prefix !== '') {
+            if (trim($prefix) === '') {
+                return false;
+            }
+            $from = $apos;
+            for ($i = 0; $i < $window && $from > 0; $i++) {
+                $from = strrpos(substr($content, 0, $from - 1), "\n");
+                $from = ($from === false) ? 0 : $from + 1;
+            }
+            $found = null;
+            foreach (self::linePositions(substr($content, $from, $apos - $from), $prefix) as $p) {
+                $found = array($from + $p, strlen($prefix)); // the last one, closest to the anchor
+            }
+            if ($found === null) {
+                return false;
+            }
+            $res['prefix'] = $found;
+        }
+        return $res;
+    }
+
+    /**
+     * The one changed region between two versions of a file (one op changes one place),
+     * with 3 lines of context. 'line' is the first changed line in $a (1-based).
+     * @return array ['line', 'before' => [], 'old' => [], 'new' => [], 'after' => []]
+     */
+    public static function changeRegion($a, $b, $eol = "\n")
+    {
+        $la = explode("\n", str_replace("\r\n", "\n", $a));
+        $lb = explode("\n", str_replace("\r\n", "\n", $b));
+        $na = count($la);
+        $nb = count($lb);
+        $p = 0;
+        while ($p < $na && $p < $nb && $la[$p] === $lb[$p]) {
+            $p++;
+        }
+        $q = 0;
+        while ($q < $na - $p && $q < $nb - $p && $la[$na - 1 - $q] === $lb[$nb - 1 - $q]) {
+            $q++;
+        }
+        $ctx = 3;
+        return array(
+            'line' => $p + 1,
+            'before' => array_slice($la, max(0, $p - $ctx), min($ctx, $p)),
+            'old' => array_slice($la, $p, $na - $p - $q),
+            'new' => array_slice($lb, $p, $nb - $p - $q),
+            'after' => array_slice($la, $na - $q, min($ctx, $q)),
+        );
     }
 
     protected static function toEol($text, $eol)
@@ -584,7 +706,7 @@ class AutopatcherEngine
             // $overrides: simulated file contents (path => content, false = file removed)
             $hasOverride = array_key_exists($path, $overrides);
             $exists = $hasOverride ? ($overrides[$path] !== false) : is_file($full);
-            $fileRes = array('status' => self::ST_APPLIED, 'exists' => $exists, 'old' => null, 'new' => null, 'details' => array(), 'create' => !empty($spec['create']));
+            $fileRes = array('status' => self::ST_APPLIED, 'exists' => $exists, 'old' => null, 'new' => null, 'details' => array(), 'create' => !empty($spec['create']), 'changes' => array());
 
             if (!empty($spec['create'])) {
                 $want = isset($spec['content']) ? $spec['content'] : '';
@@ -652,6 +774,8 @@ class AutopatcherEngine
                 $res['counts'][$st]++;
                 if ($st == self::ST_PENDING) {
                     $pending++;
+                    // what exactly this change does (dry run view)
+                    $fileRes['changes'][] = self::changeRegion($content, $newContent, $eol);
                     $content = $newContent;
                 } elseif ($st == self::ST_CONFLICT) {
                     $conflict++;

@@ -60,7 +60,7 @@
 <p>Regular <code>git diff</code> or <code>diff -u</code> output, paths from the MajorDoMo root. For example, a change of your fork against upstream:</p>
 <pre>cd /path/to/htdocs
 git diff upstream/alpha -- lib/hooks.inc.php &gt; cms/autopatcher/patches/10-hooks-php8.diff</pre>
-<p>New files can be created (<code>--- /dev/null</code>). Deletion, rename and binary files are not supported: such files must be excluded with an <code># exclude:</code> line.</p>
+<p>New files can be created (<code>--- /dev/null</code>). Deletion, rename and binary files are not supported. If a patch has them, its card lists such files and files missing in this installation. Select the ones to skip and press «Skip selected»: <code># exclude:</code> lines are added to the patch, the other changes are applied as usual.</p>
 
 <h4>SEARCH/REPLACE — <code>*.replace</code></h4>
 <p>Only a unique fragment is searched, so such a patch survives changes in neighbouring lines:</p>
@@ -71,7 +71,7 @@ exact lines as they are in the file now
 =======
 lines after the fix
 &gt;&gt;&gt;&gt;&gt;&gt;&gt; REPLACE</pre>
-<p>One file may contain several <code>FILE:</code> and <code>SEARCH/REPLACE</code> blocks. The fragment must occur in the file exactly once and start at the beginning of a line.</p>
+<p>One file may contain several <code>FILE:</code> and <code>SEARCH/REPLACE</code> blocks. The fragment must occur in the file exactly once and start at the beginning of a line. Several patches may insert lines at the same anchor: each recognizes its own insertion within 100 lines of the anchor, even with another patch's lines in between.</p>
 
 <h4>Header lines</h4>
 <table class="table table-condensed">
@@ -110,6 +110,7 @@ lines after the fix
 </table>
 <p>Guarantees: a patch is applied to all its files at once or not at all. A new file is first written to a temporary one, checked with <code>php -l</code> and only then replaces the original. The original is backed up first. A conflict never writes anything.</p>
 <p>The table state is checked against the files every time the module page is opened.</p>
+<p><b>Dry run</b> in the patch card shows what would change and writes nothing: for every file the changed fragments (removed lines red, added green) with line numbers. A file can be downloaded as it is now and as it would be after applying; all changed files as one archive with <code>before/</code> and <code>after/</code> folders (<code>.zip</code>, or <code>.tar.gz</code> without ZipArchive). An applied patch also has a <b>dry run of revert</b>.</p>
 
 <h3 id="ap-revert">6. Reverting a patch</h3>
 <p>«Revert» applies the patch backwards and <b>disables</b> it, otherwise automatic mode would apply it again on the next start. To bring it back, enable it and press Apply.</p>
@@ -172,6 +173,7 @@ php /path/to/htdocs/modules/autopatcher/cli.php apply</pre>
     <li><b>Log</b>: <code>cms/debmes/&lt;date&gt;/autopatcher.log</code>.</li>
     <li><b>State without a browser</b>: <code>cli.php status</code>.</li>
     <li><b>If «Last run» does not change after a restart</b>, check that <code>cycle.php</code> contains the module reinstall block: <code>grep -n "Re-installing module" cycle.php</code>.</li>
+    <li><b>Loop protection.</b> If a patch has to be applied on three runs in a row (something reverts it) or a module is reinstalled on three runs in a row (its files change after every installation), automatic mode stops for it: «error» state with an explanation and an entry in System errors. A manual Apply or Install re-enables it. Automatic service restarts are requested at most once in 10 minutes.</li>
     <li><b>If a module is reinstalled on every start</b>, its marker file does not appear after installation, or the module changes its own files. Fix the «Installed marker» or choose «Only when the module is missing».</li>
 </ul>
 </div>

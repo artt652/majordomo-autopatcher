@@ -8,6 +8,15 @@
     textarea.ap-editor { height: 160px; }
     .ap-editor.ap-expanded { height: 70vh !important; }
     .ap-spin { animation: ap-spin 1s linear infinite; }
+    .ap-hunks { font-family: Consolas, Menlo, monospace; font-size: 12px; overflow: auto; max-height: 420px; border: 1px solid #ddd; border-radius: 4px; resize: vertical; }
+    .ap-hunks.ap-expanded { max-height: none; }
+    .ap-hunk { border-bottom: 1px solid #ddd; }
+    .ap-hunk:last-child { border-bottom: 0; }
+    .ap-hh { background: #f0f4f8; color: #678; padding: 2px 8px; }
+    .ap-l { white-space: pre; padding: 0 8px; min-height: 1.4em; }
+    .ap-del { background: #fde8e8; color: #a12; }
+    .ap-add { background: #e6f6e6; color: #165; }
+    .ap-ctx { color: #555; }
     @keyframes ap-spin { to { transform: rotate(360deg); } }
 </style>
 <script>
@@ -109,6 +118,20 @@
 </form>
 [#if STATUS_CLASS="danger"#]<div class="alert alert-warning"><#LANG_AUTOPATCHER_CONFLICT_HELP#> <a href="?view_mode=help&section=states"><#LANG_AUTOPATCHER_MORE#></a></div>[#endif STATUS_CLASS#]
 [#if EVAL_MESSAGE!=""#]<div class="alert alert-danger">[#EVAL_MESSAGE#]</div>[#endif EVAL_MESSAGE#]
+[#if SKIP_COUNT!="0"#]
+<div class="alert alert-warning">
+    <form action="?" method="post" style="margin: 0;">
+        <p><b><#LANG_AUTOPATCHER_SKIP_TITLE#></b></p>
+        <p><#LANG_AUTOPATCHER_SKIP_HELP#></p>
+        [#begin SKIP_FILES#]
+        <div class="checkbox" style="margin: 2px 0;"><label><input type="checkbox" name="skip[]" value="[#PATH#]" checked> <code>[#PATH#]</code> — [#REASON#]</label></div>
+        [#end SKIP_FILES#]
+        <p style="margin: 10px 0 0;"><button type="submit" class="btn btn-warning btn-sm"><i class="glyphicon glyphicon-scissors"></i> <#LANG_AUTOPATCHER_SKIP_BUTTON#></button></p>
+        <input type="hidden" name="view_mode" value="skip_files">
+        <input type="hidden" name="id" value="[#ID#]">
+    </form>
+</div>
+[#endif SKIP_COUNT#]
 [#if CONFIRM_REVERT="1"#]
 <div class="alert alert-warning">
     <p><#LANG_AUTOPATCHER_REVERT_AFFECTS#>: <b>[#AFFECTED#]</b></p>
@@ -148,6 +171,8 @@
 </table>
 <p>
     <a href="?view_mode=check_patch&id=[#ID#]" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-refresh"></i> <#LANG_AUTOPATCHER_CHECK#></a>
+    <a href="?view_mode=dryrun_patch&id=[#ID#]" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-eye-open"></i> <#LANG_AUTOPATCHER_DRY_RUN#></a>
+    [#if STATUS_CLASS="success"#]<a href="?view_mode=dryrun_patch&id=[#ID#]&reverse=1" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-eye-open"></i> <#LANG_AUTOPATCHER_DRY_RUN_REVERT#></a>[#endif STATUS_CLASS#]
     <a href="?view_mode=apply_patch&id=[#ID#]" class="btn btn-success btn-sm"><i class="glyphicon glyphicon-ok"></i> <#LANG_AUTOPATCHER_APPLY#></a>
     <a href="?view_mode=revert_patch&id=[#ID#]" class="btn btn-warning btn-sm" onclick="return confirm('<#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-repeat"></i> <#LANG_AUTOPATCHER_REVERT#></a>
     <a href="?view_mode=edit_patch&id=[#ID#]" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-pencil"></i> <#LANG_EDIT#></a>
@@ -155,6 +180,34 @@
 </p>
 <pre id="ap_view" class="ap-editor" style="height: 180px;">[#CONTENT#]</pre>
 <a href="#" class="btn btn-default btn-xs ap-size" data-target="ap_view"><i class="glyphicon glyphicon-resize-vertical"></i> <#LANG_AUTOPATCHER_EXPAND#></a>
+[#endif VIEW_MODE#]
+
+[#if VIEW_MODE="dryrun_patch"#]
+<!-- ============ dry run ============ -->
+<p><a href="?view_mode=view_patch&id=[#ID#]" class="btn btn-default btn-sm"><i class="glyphicon glyphicon-chevron-left"></i> <#LANG_BACK#></a></p>
+<h4>[#if REVERSE="1"#]<#LANG_AUTOPATCHER_DRY_REVERT_TITLE#>[#else#]<#LANG_AUTOPATCHER_DRY_TITLE#>[#endif REVERSE#]: [#TITLE#] <small>[#FILENAME#]</small></h4>
+<div class="alert alert-info"><#LANG_AUTOPATCHER_DRY_HELP#></div>
+[#if DRY_ERROR!=""#]<div class="alert alert-danger">[#DRY_ERROR#]</div>[#endif DRY_ERROR#]
+[#if DRY_STATUS="pending"#]<div class="alert alert-warning"><#LANG_AUTOPATCHER_DRY_WILL#>: <b>[#CHANGED_COUNT#]</b></div>[#endif DRY_STATUS#]
+[#if DRY_STATUS="applied"#]<div class="alert alert-success">[#if REVERSE="1"#]<#LANG_AUTOPATCHER_DRY_NOTHING_REVERT#>[#else#]<#LANG_AUTOPATCHER_DRY_NOTHING_APPLY#>[#endif REVERSE#]</div>[#endif DRY_STATUS#]
+[#if DRY_STATUS="conflict"#]<div class="alert alert-danger"><#LANG_AUTOPATCHER_DRY_CONFLICT#></div>[#endif DRY_STATUS#]
+<p>
+    [#if CHANGED_COUNT!="0"#]<a href="?view_mode=dryrun_archive&id=[#ID#]&reverse=[#REVERSE#]" class="btn btn-primary btn-sm"><i class="glyphicon glyphicon-download-alt"></i> <#LANG_AUTOPATCHER_DRY_ARCHIVE#></a>[#endif CHANGED_COUNT#]
+    [#if DRY_STATUS="pending"#][#if REVERSE="1"#]<a href="?view_mode=revert_patch&id=[#ID#]" class="btn btn-warning btn-sm" onclick="return confirm('<#LANG_ARE_YOU_SURE#>')"><i class="glyphicon glyphicon-repeat"></i> <#LANG_AUTOPATCHER_REVERT#></a>[#else#]<a href="?view_mode=apply_patch&id=[#ID#]" class="btn btn-success btn-sm"><i class="glyphicon glyphicon-ok"></i> <#LANG_AUTOPATCHER_APPLY#></a>[#endif REVERSE#][#endif DRY_STATUS#]
+</p>
+[#begin DRY_FILES#]
+<div class="panel panel-default">
+    <div class="panel-heading">
+        <code>[#PATH#]</code> <span class="label label-[#STATUS_CLASS#]">[#STATUS_TITLE#]</span>
+        <span class="pull-right">
+            [#if HAS_BEFORE="1"#]<a href="?view_mode=dryrun_file&id=[#ID#]&reverse=[#REVERSE#]&side=before&path=[#PATH_URL#]" class="btn btn-default btn-xs" title="<#LANG_AUTOPATCHER_DRY_DL_BEFORE#>"><i class="glyphicon glyphicon-download"></i> <#LANG_AUTOPATCHER_DRY_BEFORE#></a>[#endif HAS_BEFORE#]
+            [#if CAN_AFTER="1"#]<a href="?view_mode=dryrun_file&id=[#ID#]&reverse=[#REVERSE#]&side=after&path=[#PATH_URL#]" class="btn btn-primary btn-xs" title="<#LANG_AUTOPATCHER_DRY_DL_AFTER#>"><i class="glyphicon glyphicon-download"></i> <#LANG_AUTOPATCHER_DRY_AFTER#></a>[#endif CAN_AFTER#]
+        </span>
+    </div>
+    [#if DETAILS!=""#]<div class="panel-body"><small class="text-danger">[#DETAILS#]</small></div>[#endif DETAILS#]
+    [#if CHANGED="1"#]<div class="ap-hunks">[#HUNKS#]</div>[#endif CHANGED#]
+</div>
+[#end DRY_FILES#]
 [#endif VIEW_MODE#]
 
 [#if VIEW_MODE="help"#]
